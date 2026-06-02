@@ -4,7 +4,7 @@ name: Mama's Fish House Monitor
 on:
   schedule:
     # Every 5 minutes. Offset by 2 min to avoid the top-of-hour delay queue.
-    - cron: '2-59/5 * * * *'
+       - cron: '*/5 * * * *'
   workflow_dispatch:   # lets you trigger a run manually from the Actions tab
 
 # Auto-disable safeguard: GitHub disables scheduled workflows after 60 days
