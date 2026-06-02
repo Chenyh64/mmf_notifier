@@ -31,7 +31,7 @@ import requests
 
 # ========== CONFIGURATION ==========
 VENUE = "mamasfishhouserestaurantinn"
-TARGET_DATES = ["2026-06-05"]           # YYYY-MM-DD; add more dates if you want
+TARGET_DATES = ["2026-06-05","2026-06-07"]           # YYYY-MM-DD; add more dates if you want
 PARTY_SIZE = 2
 POLL_INTERVAL_SECONDS = 300              # 5 minutes — be polite to their API
 STATE_FILE = "notified_slots.json"       # remembers what we've already alerted on
@@ -84,31 +84,40 @@ def fetch_availability(date: str) -> dict:
     return resp.json()
 
 
-def parse_slots(data: dict, date: str) -> list:
+def parse_slots(data: dict, requested_date: str) -> list:
     """
-    Pull bookable/requestable time slots out of the SevenRooms response.
-    SevenRooms structure (typical):
-        data.data.availability[<YYYY-MM-DD>] = [ { time, type, ... }, ... ]
+    Extract genuinely-bookable time slots from the SevenRooms response.
+
+    Real structure:
+        data.availability[<date>] -> list of SHIFTS (LUNCH/DINNER/etc.)
+        each shift has a `times` list of actual time slots.
+
+    A time slot is truly available only when:
+        - type == "book"                                    (one-click bookable)
+        - OR type == "request" AND is_requestable is True   (accepting requests)
+
+    type == "request" with is_requestable == False is a PLACEHOLDER for
+    "no availability" — SevenRooms returns these even when fully booked.
     """
     slots = []
     avail = (data.get("data") or {}).get("availability") or {}
-    items = avail.get(date) or []
-    for it in items:
-        slot_type = it.get("type") or "unknown"
-        time_str = (
-            it.get("time_iso")
-            or it.get("time")
-            or it.get("real_datetime_of_slot")
-            or ""
-        )
-        # "book" = directly bookable, "request" = request only.
-        # If the structure shifts, fall back on any item that has a shift id.
-        if slot_type in ("book", "request") or it.get("shift_persistent_id"):
-            slots.append({
-                "time": time_str,
-                "type": slot_type,
-                "label": it.get("public_description_title") or "",
-            })
+    # Look up only the exact date we asked for. SevenRooms sometimes silently
+    # returns data for a different date when the requested one is closed.
+    shifts = avail.get(requested_date) or []
+    for shift in shifts:
+        if shift.get("is_closed") or shift.get("is_forced_empty_availability"):
+            continue
+        shift_label = shift.get("shift_category") or shift.get("name") or ""
+        for t in shift.get("times") or []:
+            slot_type = t.get("type")
+            is_requestable = bool(t.get("is_requestable"))
+            if slot_type == "book" or (slot_type == "request" and is_requestable):
+                slots.append({
+                    "time":     t.get("time") or "",            # "5:30 PM" — for display
+                    "time_iso": t.get("time_iso") or "",        # "2026-06-05 17:30:00" — unique key
+                    "type":     slot_type,
+                    "label":    shift_label,
+                })
     return slots
 
 
@@ -155,7 +164,8 @@ def check_once(state: set) -> set:
         slots = parse_slots(data, date)
         log.info("%s — %d slot(s) detected", date, len(slots))
         for s in slots:
-            key = f"{date}|{s['time']}|{s['type']}"
+            # Unique key per (date, exact ISO time, type) — avoids dupe emails.
+            key = f"{date}|{s['time_iso']}|{s['type']}"
             if key not in state:
                 new_found.append((date, s))
                 state.add(key)
@@ -167,7 +177,7 @@ def check_once(state: set) -> set:
             "",
         ]
         for date, s in new_found:
-            badge = "BOOKABLE" if s["type"] == "book" else f"REQUEST ({s['type']})"
+            badge = "BOOKABLE" if s["type"] == "book" else "REQUEST"
             extra = f" — {s['label']}" if s["label"] else ""
             lines.append(f"  • {date}  {s['time']}  [{badge}]{extra}")
         lines.append("")
