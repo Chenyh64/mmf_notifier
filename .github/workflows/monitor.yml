@@ -1,0 +1,45 @@
+name: Mama's Fish House Monitor
+
+on:
+  schedule:
+    # Every 5 minutes. Offset by 2 min to avoid the top-of-hour delay queue.
+    - cron: '2-59/5 * * * *'
+  workflow_dispatch:   # lets you trigger a run manually from the Actions tab
+
+# Auto-disable safeguard: GitHub disables scheduled workflows after 60 days
+# of repo inactivity. Not an issue here (we're done by June 6).
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # needed so we can commit the dedupe state file back
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Check availability
+        env:
+          EMAIL_FROM:     ${{ secrets.EMAIL_FROM }}
+          EMAIL_TO:       ${{ secrets.EMAIL_TO }}
+          EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
+        run: python mamas_monitor.py --once
+
+      - name: Persist state file
+        run: |
+          if [ -f notified_slots.json ]; then
+            git config user.name  "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add notified_slots.json
+            if ! git diff --staged --quiet; then
+              git commit -m "chore: update notified slots [skip ci]"
+              git push
+            fi
+          fi
